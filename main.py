@@ -1,40 +1,65 @@
+import os
+import telebot
 import time
-import requests
-from datetime import datetime
 import schedule
+from datetime import datetime
 
-# ------------------ تنظیمات ------------------
-TELEGRAM_TOKEN = "توکن_بات"
-CHAT_ID = "چت_آیدی"
+# گرفتن توکن از متغیر محیطی Railway
+TOKEN = os.environ.get("TELEGRAM-BOT-TOKEN")
+bot = telebot.TeleBot(TOKEN)
 
-# مثال: لیست ولت‌ها
-wallets = {
-    "Wallet 1": {"positions": []},
-    "Wallet 2": {"positions": []}
-}
+# ذخیره‌ی chat_id های کاربرا
+user_chat_ids = set()
 
-# ذخیره وضعیت قبلی
-previous_positions = {wallet: [] for wallet in wallets}
+# دیتابیس ساده برای نگهداری پوزیشن‌ها
+open_positions = {}
+closed_positions = {}
 
-# ------------------ توابع ------------------
-def send_message(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
-    try:
-        requests.post(url, data=payload)
-    except Exception as e:
-        print("Telegram error:", e)
+# وقتی کاربر /start بزنه
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_chat_ids.add(message.chat.id)
+    bot.send_message(message.chat.id, "✅ ربات فعال شد. از این به بعد گزارش‌ها اینجا برات میاد.")
 
-def fetch_positions(wallet):
-    # اینجا باید API واقعی صرافی/سرویس رو بزنی
-    # من فعلاً شبیه‌سازی می‌کنم
-    return wallets[wallet]["positions"]
-
+# شبیه‌سازی باز و بسته شدن پوزیشن (تو پروژه واقعی باید این قسمت به API ولت وصل بشه)
 def check_positions():
-    global previous_positions
-    changes_detected = []
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    messages = []
 
-    for wallet in wallets:
+    # مثال تست: هر بار یکی باز یا بسته بشه
+    if int(time.time()) % 2 == 0:  
+        messages.append(f"📈 پوزیشن جدید باز شد در {now}\nسود/ضرر: {format(12.3456, '.2f')} USDT")
+    else:
+        messages.append(f"📉 پوزیشنی بسته شد در {now}\nسود/ضرر: {format(-3.4567, '.2f')} USDT")
+
+    # ارسال به همه کاربرا
+    for chat_id in user_chat_ids:
+        for msg in messages:
+            bot.send_message(chat_id, msg)
+
+# گزارش دوره‌ای
+def send_periodic_report():
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    report = f"🕒 گزارش دوره‌ای ({now}):\n"
+    report += "در این بازه پوزیشن جدیدی باز یا بسته نشد."
+    
+    for chat_id in user_chat_ids:
+        bot.send_message(chat_id, report)
+
+# زمان‌بندی (هر 1 ساعت یه گزارش)
+schedule.every(1).hours.do(send_periodic_report)
+
+# اجرای همزمان بات و زمان‌بندی
+def run():
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
+
+import threading
+threading.Thread(target=run, daemon=True).start()
+
+# ران کردن ربات
+bot.polling(non_stop=True)    for wallet in wallets:
         current_positions = fetch_positions(wallet)
         prev_positions = previous_positions[wallet]
 
