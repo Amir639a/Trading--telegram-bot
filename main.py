@@ -29,18 +29,10 @@ def _sign_fmt(x):
         return f"🔴 {v:,.2f}"
 
 def _normalize_from_hyperdash(raw):
-    """
-    تلاش برای نرمال‌سازی ساختارهای متداول HyperDash:
-    ممکنه response یه list باشه یا dict با کلیدهای مختلف.
-    خروجی: list[dict(uid, pair, side, size, entryPrice, markPrice, unrealizedPnl)]
-    """
     out = []
-
-    # اگر خودش لیست پوزیشن بود
     if isinstance(raw, list):
         items = raw
     elif isinstance(raw, dict):
-        # سعی کن کلیـدهایی مثل positions / openPositions رو پیدا کنی
         for key in ("positions", "openPositions", "data"):
             if key in raw and isinstance(raw[key], list):
                 raw = raw[key]
@@ -50,7 +42,6 @@ def _normalize_from_hyperdash(raw):
         items = []
 
     for p in items:
-        # اسم جفت/کوین
         pair = p.get("pair") or p.get("symbol") or p.get("coin") or p.get("name")
         side = (p.get("side") or p.get("positionSide") or "").upper()
         size = _safe_float(p.get("size") or p.get("amount") or p.get("qty") or 0)
@@ -58,12 +49,10 @@ def _normalize_from_hyperdash(raw):
         mark = _safe_float(p.get("markPrice") or p.get("mark") or p.get("price") or 0)
         pnl  = _safe_float(p.get("unrealizedPnl") or p.get("uPnl") or p.get("pnl") or 0)
 
-        # uid قابل اتکا؛ اگر id نیست، خودش بساز
         base_id = p.get("id") or p.get("positionId")
         if not base_id:
             base_id = f"HD:{pair}:{side}"
 
-        # فقط پوزیشن‌های باز (سایز غیر صفر)
         if abs(size) > 0:
             out.append({
                 "uid": str(base_id),
@@ -77,10 +66,6 @@ def _normalize_from_hyperdash(raw):
     return out
 
 def _normalize_from_hyperliquid(raw):
-    """
-    نرمال‌سازی خروجی Hyperliquid /info {clearinghouseState}.
-    فقط پوزیشن‌های با szi != 0 رو برمی‌گردونه.
-    """
     out = []
     items = []
     if isinstance(raw, dict):
@@ -98,7 +83,7 @@ def _normalize_from_hyperliquid(raw):
             entry = _safe_float(pos.get("entryPx"), 0)
             pnl = _safe_float(pos.get("unrealizedPnl"), 0)
             side = "LONG" if szi > 0 else "SHORT"
-            uid = f"HL:{coin}:{side}"  # چون نت پوزیشن هست، همین کافیه
+            uid = f"HL:{coin}:{side}"
 
             out.append({
                 "uid": uid,
@@ -106,7 +91,7 @@ def _normalize_from_hyperliquid(raw):
                 "side": side,
                 "size": abs(szi),
                 "entryPrice": entry,
-                "markPrice": None,        # از این API نداریم
+                "markPrice": None,
                 "unrealizedPnl": pnl
             })
         except Exception:
@@ -114,10 +99,6 @@ def _normalize_from_hyperliquid(raw):
     return out
 
 def get_positions(wallet):
-    """
-    گرفتن پوزیشن‌های باز؛ اول از HyperDash، اگر خالی بود از Hyperliquid.
-    """
-    # --- HyperDash ---
     try:
         url = f"https://hyperdash.info/api/v1/trader/{wallet}/positions"
         r = requests.get(url, timeout=10)
@@ -128,7 +109,6 @@ def get_positions(wallet):
     except Exception as e:
         print(f"[HyperDash] error for {wallet}: {e}")
 
-    # --- Hyperliquid (fallback) ---
     try:
         url = "https://api.hyperliquid.xyz/info"
         payload = {"type": "clearinghouseState", "user": wallet}
@@ -141,7 +121,6 @@ def get_positions(wallet):
         return []
 
 def send_message(chat_id, text):
-    """ارسال پیام به تلگرام"""
     bot.send_message(chat_id, text, parse_mode="Markdown")
 
 def format_position_line(p):
@@ -157,7 +136,6 @@ def format_position_line(p):
 
 # ================== منطق لحظه‌ای + دوره‌ای ==================
 def check_positions():
-    """چک کردن تغییرات پوزیشن‌ها برای همه کاربرا (لحظه‌ای)"""
     for chat_id, wallets in user_wallets.items():
         for wallet in wallets:
             current_positions = get_positions(wallet)
@@ -166,7 +144,6 @@ def check_positions():
             current_map = {p["uid"]: p for p in current_positions}
             prev_map    = {p["uid"]: p for p in prev_positions}
 
-            # باز شده‌ها
             for uid, pos in current_map.items():
                 if uid not in prev_map:
                     msg = (
@@ -177,7 +154,6 @@ def check_positions():
                     )
                     send_message(chat_id, msg)
 
-            # بسته شده‌ها
             for uid, pos in prev_map.items():
                 if uid not in current_map:
                     msg = (
@@ -192,9 +168,7 @@ def check_positions():
             previous_positions[(chat_id, wallet)] = current_positions
 
 def periodic_report():
-    """گزارش دوره‌ای هر ۱ دقیقه برای همه کاربرا (همه پوزیشن‌های باز)"""
     for chat_id, wallets in user_wallets.items():
-        any_report = False
         for wallet in wallets:
             current_positions = get_positions(wallet)
 
@@ -202,13 +176,8 @@ def periodic_report():
             if current_positions:
                 body = "\n\n".join([format_position_line(p) for p in current_positions])
                 send_message(chat_id, f"{header}\n{body}")
-                any_report = True
             else:
-                # اگر دوست نداری وقتی خالیه چیزی بفرسته، این خط رو کامنت کن
                 send_message(chat_id, f"{header}\n⏳ در حال حاضر هیچ پوزیشنی باز نیست.")
-
-        # if not any_report:  # اگر بخوای فقط وقتی چیزی نیست یه پیام کلی بده، اینو فعال کن
-        #     send_message(chat_id, "ℹ️ در حال حاضر هیچ پوزیشنی باز نیست.")
 
 # ================== دستورات ربات ==================
 @bot.message_handler(commands=['start'])
@@ -216,6 +185,18 @@ def start(message):
     chat_id = message.chat.id
     user_wallets.setdefault(chat_id, [])
     send_message(chat_id, "سلام 👋\nآدرس ولت‌هات رو یکی یکی بفرست تا برات مانیتور کنم.")
+
+@bot.message_handler(commands=['stop'])
+def stop(message):
+    chat_id = message.chat.id
+    if chat_id in user_wallets:
+        user_wallets.pop(chat_id, None)
+        keys_to_remove = [k for k in previous_positions if k[0] == chat_id]
+        for k in keys_to_remove:
+            previous_positions.pop(k, None)
+        send_message(chat_id, "🛑 مانیتورینگ برای شما متوقف شد.\nبرای شروع دوباره، فقط آدرس ولت جدیدت رو بفرست.")
+    else:
+        send_message(chat_id, "⚠️ هیچ مانیتورینگی برای شما فعال نبود.")
 
 @bot.message_handler(func=lambda m: True)
 def add_wallet(message):
@@ -228,7 +209,6 @@ def add_wallet(message):
         send_message(chat_id, f"⚠️ ولت `{wallet}` از قبل اضافه شده.")
         return
     user_wallets[chat_id].append(wallet)
-    # ریست وضعیت قبلی برای این ولت تا آلارم اشتباه نده
     previous_positions[(chat_id, wallet)] = get_positions(wallet)
     send_message(chat_id, f"✅ ولت `{wallet}` اضافه شد و از همین الان مانیتور میشه.")
 
@@ -237,7 +217,6 @@ schedule.every(1).minutes.do(periodic_report)
 
 def run_scheduler():
     while True:
-        # چک لحظه‌ای (هر 2 ثانیه)
         check_positions()
         schedule.run_pending()
         time.sleep(2)
