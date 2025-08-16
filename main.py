@@ -10,13 +10,10 @@ bot = telebot.TeleBot(API_TOKEN)
 
 # برای هر کاربر یک لیست ولت ذخیره می‌کنیم
 user_wallets = {}
-user_intervals = {}   # فاصله زمانی گزارش دوره‌ای برای هر کاربر
+# کلید: (chat_id, wallet) → لیست پوزیشن‌های نرمال‌شده
 previous_positions = {}
-
-# نگهداری وضعیت هر کاربر
-user_state = {}  
-# ساختار نمونه:
-# {chat_id: {"step": "ask_wallets", "expected": 2, "wallets": [], "interval": 1}}
+# وضعیت مانیتورینگ هر کاربر
+monitoring_status = {}
 
 # ---------- ابزارهای کمکی ----------
 def _safe_float(x, default=0.0):
@@ -54,7 +51,6 @@ def _normalize_from_hyperdash(raw):
         pnl  = _safe_float(p.get("unrealizedPnl") or p.get("uPnl") or p.get("pnl") or 0)
 
         base_id = p.get("id") or p.get("positionId") or f"HD:{pair}:{side}"
-
         if abs(size) > 0:
             out.append({
                 "uid": str(base_id),
@@ -69,12 +65,7 @@ def _normalize_from_hyperdash(raw):
 
 def _normalize_from_hyperliquid(raw):
     out = []
-    items = []
-    if isinstance(raw, dict):
-        items = raw.get("assetPositions", [])
-    elif isinstance(raw, list):
-        items = raw
-
+    items = raw.get("assetPositions", []) if isinstance(raw, dict) else raw
     for p in items:
         try:
             pos = p.get("position", {})
@@ -86,7 +77,6 @@ def _normalize_from_hyperliquid(raw):
             pnl = _safe_float(pos.get("unrealizedPnl"), 0)
             side = "LONG" if szi > 0 else "SHORT"
             uid = f"HL:{coin}:{side}"
-
             out.append({
                 "uid": uid,
                 "pair": coin,
@@ -108,9 +98,8 @@ def get_positions(wallet):
             norm = _normalize_from_hyperdash(r.json())
             if norm:
                 return norm
-    except Exception as e:
-        print(f"[HyperDash] error for {wallet}: {e}")
-
+    except Exception:
+        pass
     try:
         url = "https://api.hyperliquid.xyz/info"
         payload = {"type": "clearinghouseState", "user": wallet}
@@ -118,8 +107,7 @@ def get_positions(wallet):
         r.raise_for_status()
         norm = _normalize_from_hyperliquid(r.json())
         return norm
-    except Exception as e:
-        print(f"[Hyperliquid] error for {wallet}: {e}")
+    except Exception:
         return []
 
 def send_message(chat_id, text):
@@ -136,13 +124,15 @@ def format_position_line(p):
     lines.append(f"💵 PNL: {_sign_fmt(p.get('unrealizedPnl'))}")
     return "\n".join(lines)
 
-# ================== منطق مانیتورینگ ==================
+# ================== منطق لحظه‌ای + دوره‌ای ==================
 def check_positions():
     for chat_id, wallets in user_wallets.items():
+        if not monitoring_status.get(chat_id, True):
+            continue  # مانیتورینگ خاموش → رد شو
+
         for wallet in wallets:
             current_positions = get_positions(wallet)
             prev_positions = previous_positions.get((chat_id, wallet), [])
-
             current_map = {p["uid"]: p for p in current_positions}
             prev_map    = {p["uid"]: p for p in prev_positions}
 
@@ -162,74 +152,61 @@ def check_positions():
                         "✅ *Position Closed*\n"
                         f"💼 (`{wallet}`)\n"
                         "━━━━━━━━━━\n"
-                        f"🪙 *{pos.get('pair','?')}* | {('🟢 LONG' if pos.get('side')=='LONG' else '🔴 SHORT')}\n"
+                        f"🪙 *{pos.get('pair','?')}* | "
+                        f"{('🟢 LONG' if pos.get('side')=='LONG' else '🔴 SHORT')}\n"
                         "🔚 پوزیشن بسته شد."
                     )
                     send_message(chat_id, msg)
 
             previous_positions[(chat_id, wallet)] = current_positions
 
-def periodic_report(chat_id):
-    wallets = user_wallets.get(chat_id, [])
-    for wallet in wallets:
-        current_positions = get_positions(wallet)
-        header = f"🕒 *Periodic Report*\n💼 (`{wallet}`)\n━━━━━━━━━━"
-        if current_positions:
-            body = "\n\n".join([format_position_line(p) for p in current_positions])
-            send_message(chat_id, f"{header}\n{body}")
-        else:
-            send_message(chat_id, f"{header}\n⏳ در حال حاضر هیچ پوزیشنی باز نیست.")
+def periodic_report():
+    for chat_id, wallets in user_wallets.items():
+        if not monitoring_status.get(chat_id, True):
+            continue  # مانیتورینگ خاموش → رد شو
 
-# ================== دستورات ==================
+        for wallet in wallets:
+            current_positions = get_positions(wallet)
+            header = f"🕒 *Periodic Report (1 min)*\n💼 (`{wallet}`)\n━━━━━━━━━━"
+            if current_positions:
+                body = "\n\n".join([format_position_line(p) for p in current_positions])
+                send_message(chat_id, f"{header}\n{body}")
+            else:
+                send_message(chat_id, f"{header}\n⏳ در حال حاضر هیچ پوزیشنی باز نیست.")
+
+# ================== دستورات ربات ==================
 @bot.message_handler(commands=['start'])
 def start(message):
     chat_id = message.chat.id
-    user_state[chat_id] = {"step": "ask_count"}
-    send_message(chat_id, "👋 سلام! می‌خوای چند تا آدرس کیف پول رو مانیتور کنم؟ عددش رو بفرست.")
+    user_wallets.setdefault(chat_id, [])
+    monitoring_status[chat_id] = True
+    send_message(chat_id, "سلام 👋\nآدرس ولت‌هات رو یکی یکی بفرست تا برات مانیتور کنم.")
+
+@bot.message_handler(commands=['stop'])
+def stop(message):
+    chat_id = message.chat.id
+    monitoring_status[chat_id] = False
+    send_message(chat_id, "🛑 مانیتورینگ متوقف شد.\nبرای شروع دوباره ولت جدید بفرست.")
 
 @bot.message_handler(func=lambda m: True)
-def handle_message(message):
+def add_wallet(message):
     chat_id = message.chat.id
-    text = message.text.strip()
-
-    if chat_id not in user_state:
-        send_message(chat_id, "برای شروع /start رو بزن.")
+    if not monitoring_status.get(chat_id, True):
+        monitoring_status[chat_id] = True  # اگر خاموش بوده، دوباره روشن میشه
+    wallet = message.text.strip()
+    if not wallet:
         return
-
-    state = user_state[chat_id]
-
-    if state["step"] == "ask_count":
-        if text.isdigit():
-            state["expected"] = int(text)
-            state["wallets"] = []
-            state["step"] = "ask_wallets"
-            send_message(chat_id, f"🔢 خیلی خب! {state['expected']} تا آدرس بفرست (یکی یکی).")
-        else:
-            send_message(chat_id, "⚠️ لطفاً یه عدد معتبر بفرست.")
-
-    elif state["step"] == "ask_wallets":
-        wallet = text
-        state["wallets"].append(wallet)
-        send_message(chat_id, f"✅ ولت `{wallet}` ثبت شد.")
-        if len(state["wallets"]) < state["expected"]:
-            send_message(chat_id, f"ℹ️ لطفاً ولت بعدی رو بفرست ({len(state['wallets'])+1}/{state['expected']}).")
-        else:
-            state["step"] = "ask_interval"
-            send_message(chat_id, "⏰ حالا بگو هر چند دقیقه یکبار گزارش دوره‌ای بیاد؟")
-
-    elif state["step"] == "ask_interval":
-        if text.isdigit() and int(text) > 0:
-            interval = int(text)
-            state["interval"] = interval
-            user_wallets[chat_id] = state["wallets"]
-            user_intervals[chat_id] = interval
-            state["step"] = "done"
-            send_message(chat_id, f"✅ همه‌چی تنظیم شد! گزارش هر {interval} دقیقه میاد.")
-            schedule.every(interval).minutes.do(lambda: periodic_report(chat_id))
-        else:
-            send_message(chat_id, "⚠️ لطفاً یه عدد معتبر بفرست.")
+    user_wallets.setdefault(chat_id, [])
+    if wallet in user_wallets[chat_id]:
+        send_message(chat_id, f"⚠️ ولت `{wallet}` از قبل اضافه شده.")
+        return
+    user_wallets[chat_id].append(wallet)
+    previous_positions[(chat_id, wallet)] = get_positions(wallet)
+    send_message(chat_id, f"✅ ولت `{wallet}` اضافه شد و مانیتورینگ فعال شد.")
 
 # ================== اجرا ==================
+schedule.every(1).minutes.do(periodic_report)
+
 def run_scheduler():
     while True:
         check_positions()
