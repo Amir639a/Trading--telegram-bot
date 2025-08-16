@@ -1,95 +1,94 @@
-import os
-import telebot
 import time
 import schedule
-from datetime import datetime
+import telebot
 
-# گرفتن توکن از متغیر محیطی Railway
-TOKEN = os.environ.get("TELEGRAM-BOT-TOKEN")
-bot = telebot.TeleBot(TOKEN)
+# ================== تنظیمات ==================
+API_TOKEN = "توکن_بات_خودت"
+bot = telebot.TeleBot(API_TOKEN)
 
-# ذخیره‌ی chat_id های کاربرا
-user_chat_ids = set()
+# برای هر کاربر یک لیست ولت ذخیره می‌کنیم
+user_wallets = {}
+previous_positions = {}
 
-# دیتابیس ساده برای نگهداری پوزیشن‌ها
-open_positions = {}
-closed_positions = {}
+# ================== توابع ==================
+def get_positions(wallet):
+    """
+    این تابع باید پوزیشن‌های ولت رو از API بگیره
+    فعلاً تستی خالی برمی‌گردونه
+    """
+    return []   # بعداً اینو با API واقعی پر کن
 
-# وقتی کاربر /start بزنه
-@bot.message_handler(commands=['start'])
-def start(message):
-    user_chat_ids.add(message.chat.id)
-    bot.send_message(message.chat.id, "✅ ربات فعال شد. از این به بعد گزارش‌ها اینجا برات میاد.")
+def send_message(chat_id, text):
+    """ارسال پیام به تلگرام"""
+    bot.send_message(chat_id, text, parse_mode="Markdown")
 
-# شبیه‌سازی باز و بسته شدن پوزیشن (تو پروژه واقعی باید این قسمت به API ولت وصل بشه)
 def check_positions():
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    messages = []
+    """چک کردن تغییرات پوزیشن‌ها برای همه کاربرا"""
+    changes_detected = []
 
-    # مثال تست: هر بار یکی باز یا بسته بشه
-    if int(time.time()) % 2 == 0:  
-        messages.append(f"📈 پوزیشن جدید باز شد در {now}\nسود/ضرر: {format(12.3456, '.2f')} USDT")
-    else:
-        messages.append(f"📉 پوزیشنی بسته شد در {now}\nسود/ضرر: {format(-3.4567, '.2f')} USDT")
+    for chat_id, wallets in user_wallets.items():
+        for wallet in wallets:
+            current_positions = get_positions(wallet)
+            prev_positions = previous_positions.get((chat_id, wallet), [])
 
-    # ارسال به همه کاربرا
-    for chat_id in user_chat_ids:
-        for msg in messages:
-            bot.send_message(chat_id, msg)
+            opened = [p for p in current_positions if p not in prev_positions]
+            closed = [p for p in prev_positions if p not in current_positions]
 
-# گزارش دوره‌ای
-def send_periodic_report():
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    report = f"🕒 گزارش دوره‌ای ({now}):\n"
-    report += "در این بازه پوزیشن جدیدی باز یا بسته نشد."
-    
-    for chat_id in user_chat_ids:
-        bot.send_message(chat_id, report)
+            # پوزیشن‌های باز شده
+            for p in opened:
+                msg = f"📈 *Position Opened* \nWallet: `{wallet}`\n{p}"
+                send_message(chat_id, msg)
+                changes_detected.append(f"{wallet}: Position Opened")
 
-# زمان‌بندی (هر 1 ساعت یه گزارش)
-schedule.every(1).hours.do(send_periodic_report)
+            # پوزیشن‌های بسته شده
+            for p in closed:
+                msg = f"📉 *Position Closed* \nWallet: `{wallet}`\n{p}"
+                send_message(chat_id, msg)
+                changes_detected.append(f"{wallet}: Position Closed")
 
-# اجرای همزمان بات و زمان‌بندی
-def run():
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
+            # ذخیره وضعیت قبلی
+            previous_positions[(chat_id, wallet)] = current_positions
 
-import threading
-threading.Thread(target=run, daemon=True).start()
-
-# ران کردن ربات
-bot.polling(non_stop=True)    
-for wallet in wallets:
-        current_positions = fetch_positions(wallet)
-        prev_positions = previous_positions[wallet]
-
-        opened = [p for p in current_positions if p not in prev_positions]
-        closed = [p for p in prev_positions if p not in current_positions]
-
-        # اگر باز یا بسته شد همون لحظه پیام بده
-        for p in opened:
-            msg = f"📈 *Position Opened*\nWallet: {wallet}\n{p}"
-            send_message(msg)
-            changes_detected.append(f"{wallet}: Opened {p}")
-
-        for p in closed:
-            msg = f"📉 *Position Closed*\nWallet: {wallet}\n{p}"
-            send_message(msg)
-            changes_detected.append(f"{wallet}: Closed {p}")
-
-        previous_positions[wallet] = current_positions
-
-        return changes_detected
+    return changes_detected
 
 def periodic_report():
+    """گزارش دوره‌ای هر ۱ دقیقه"""
     changes = check_positions()
     if not changes:
-        send_message("ℹ️ در هیچ کیف پولی تغییری نبود.")
+        for chat_id in user_wallets.keys():
+            send_message(chat_id, "ℹ️ در هیچ کیف پولی تغییری نبود.")
+    else:
+        summary = "\n".join(changes)
+        for chat_id in user_wallets.keys():
+            send_message(chat_id, f"📊 تغییرات اخیر:\n{summary}")
 
-# ------------------ اجرا ------------------
-schedule.every(1).hours.do(periodic_report)  # گزارش دوره‌ای هر ۱ ساعت
+# ================== دستورات ربات ==================
+@bot.message_handler(commands=['start'])
+def start(message):
+    chat_id = message.chat.id
+    user_wallets[chat_id] = []   # وقتی کاربر تازه استارت میکنه، لیست ولتش خالیه
+    send_message(chat_id, "سلام 👋 ولت‌هات رو بفرست تا مانیتور کنم.\nهر ولت رو جداگانه بفرست.")
 
-while True:
-    schedule.run_pending()
-    time.sleep(10)
+@bot.message_handler(func=lambda message: True)
+def add_wallet(message):
+    chat_id = message.chat.id
+    wallet = message.text.strip()
+
+    if chat_id not in user_wallets:
+        user_wallets[chat_id] = []
+
+    user_wallets[chat_id].append(wallet)
+    send_message(chat_id, f"✅ ولت `{wallet}` اضافه شد.\nحالا مانیتورش شروع میشه.")
+
+# ================== اجرا ==================
+schedule.every(1).minutes.do(periodic_report)
+
+def run_scheduler():
+    while True:
+        schedule.run_pending()
+        time.sleep(10)
+
+import threading
+threading.Thread(target=run_scheduler, daemon=True).start()
+
+bot.polling()
