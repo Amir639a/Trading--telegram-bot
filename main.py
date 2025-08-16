@@ -59,7 +59,8 @@ import threading
 threading.Thread(target=run, daemon=True).start()
 
 # ران کردن ربات
-bot.polling(non_stop=True)    for wallet in wallets:
+bot.polling(non_stop=True)    
+for wallet in wallets:
         current_positions = fetch_positions(wallet)
         prev_positions = previous_positions[wallet]
 
