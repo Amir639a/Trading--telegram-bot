@@ -8,10 +8,10 @@ import requests
 API_TOKEN = "8331622449:AAFoLzxC9lyGJDchsQpKpYxgIduUbsUuOys"
 bot = telebot.TeleBot(API_TOKEN)
 
-# برای هر کاربر یک لیست ولت ذخیره می‌کنیم
-user_wallets = {}
-# کلید: (chat_id, wallet) → لیست پوزیشن‌های نرمال‌شده
-previous_positions = {}
+# وضعیت اشتراکی بین تردها
+user_wallets = {}           # chat_id -> [wallets]
+previous_positions = {}     # (chat_id, wallet) -> [positions]
+state_lock = threading.Lock()
 
 # ---------- ابزارهای کمکی ----------
 def _safe_float(x, default=0.0):
@@ -21,12 +21,8 @@ def _safe_float(x, default=0.0):
         return default
 
 def _sign_fmt(x):
-    """+ با سبز و - با قرمز، با دو رقم اعشار"""
     v = _safe_float(x, 0.0)
-    if v >= 0:
-        return f"✅ +{v:,.2f}"
-    else:
-        return f"🔴 {v:,.2f}"
+    return f"✅ +{v:,.2f}" if v >= 0 else f"🔴 {v:,.2f}"
 
 def _normalize_from_hyperdash(raw):
     out = []
@@ -46,13 +42,10 @@ def _normalize_from_hyperdash(raw):
         side = (p.get("side") or p.get("positionSide") or "").upper()
         size = _safe_float(p.get("size") or p.get("amount") or p.get("qty") or 0)
         entry = _safe_float(p.get("entryPrice") or p.get("entry") or p.get("avgEntryPrice") or 0)
-        mark = _safe_float(p.get("markPrice") or p.get("mark") or p.get("price") or 0)
-        pnl  = _safe_float(p.get("unrealizedPnl") or p.get("uPnl") or p.get("pnl") or 0)
+        mark  = _safe_float(p.get("markPrice") or p.get("mark") or p.get("price") or 0)
+        pnl   = _safe_float(p.get("unrealizedPnl") or p.get("uPnl") or p.get("pnl") or 0)
 
-        base_id = p.get("id") or p.get("positionId")
-        if not base_id:
-            base_id = f"HD:{pair}:{side}"
-
+        base_id = p.get("id") or p.get("positionId") or f"HD:{pair}:{side}"
         if abs(size) > 0:
             out.append({
                 "uid": str(base_id),
@@ -66,25 +59,22 @@ def _normalize_from_hyperdash(raw):
     return out
 
 def _normalize_from_hyperliquid(raw):
-    out = []
-    items = []
+    out, items = [], []
     if isinstance(raw, dict):
         items = raw.get("assetPositions", [])
     elif isinstance(raw, list):
         items = raw
-
     for p in items:
         try:
             pos = p.get("position", {})
             szi = _safe_float(pos.get("szi"), 0)
             if szi == 0:
                 continue
-            coin = pos.get("coin") or "UNKNOWN"
+            coin  = pos.get("coin") or "UNKNOWN"
             entry = _safe_float(pos.get("entryPx"), 0)
-            pnl = _safe_float(pos.get("unrealizedPnl"), 0)
-            side = "LONG" if szi > 0 else "SHORT"
-            uid = f"HL:{coin}:{side}"
-
+            pnl   = _safe_float(pos.get("unrealizedPnl"), 0)
+            side  = "LONG" if szi > 0 else "SHORT"
+            uid   = f"HL:{coin}:{side}"
             out.append({
                 "uid": uid,
                 "pair": coin,
@@ -99,6 +89,7 @@ def _normalize_from_hyperliquid(raw):
     return out
 
 def get_positions(wallet):
+    # منبع 1: HyperDash
     try:
         url = f"https://hyperdash.info/api/v1/trader/{wallet}/positions"
         r = requests.get(url, timeout=10)
@@ -109,13 +100,13 @@ def get_positions(wallet):
     except Exception as e:
         print(f"[HyperDash] error for {wallet}: {e}")
 
+    # منبع 2: Hyperliquid
     try:
         url = "https://api.hyperliquid.xyz/info"
         payload = {"type": "clearinghouseState", "user": wallet}
         r = requests.post(url, json=payload, timeout=12)
         r.raise_for_status()
-        norm = _normalize_from_hyperliquid(r.json())
-        return norm
+        return _normalize_from_hyperliquid(r.json())
     except Exception as e:
         print(f"[Hyperliquid] error for {wallet}: {e}")
         return []
@@ -136,42 +127,54 @@ def format_position_line(p):
 
 # ================== منطق لحظه‌ای + دوره‌ای ==================
 def check_positions():
-    for chat_id, wallets in user_wallets.items():
+    # اسنپ‌شات از وضعیت فعلی کاربران/ولت‌ها
+    with state_lock:
+        snapshot = [(cid, list(wallets)) for cid, wallets in user_wallets.items()]
+
+    for chat_id, wallets in snapshot:
         for wallet in wallets:
             current_positions = get_positions(wallet)
-            prev_positions = previous_positions.get((chat_id, wallet), [])
+
+            with state_lock:
+                prev_positions = list(previous_positions.get((chat_id, wallet), []))
 
             current_map = {p["uid"]: p for p in current_positions}
             prev_map    = {p["uid"]: p for p in prev_positions}
 
+            # پوزیشن جدید
             for uid, pos in current_map.items():
                 if uid not in prev_map:
-                    msg = (
+                    send_message(
+                        chat_id,
                         "🚀 *Position Opened*\n"
                         f"💼 (`{wallet}`)\n"
                         "━━━━━━━━━━\n"
                         f"{format_position_line(pos)}"
                     )
-                    send_message(chat_id, msg)
 
+            # پوزیشن بسته شد
             for uid, pos in prev_map.items():
                 if uid not in current_map:
-                    msg = (
+                    send_message(
+                        chat_id,
                         "✅ *Position Closed*\n"
                         f"💼 (`{wallet}`)\n"
                         "━━━━━━━━━━\n"
                         f"🪙 *{pos.get('pair','?')}* | {('🟢 LONG' if pos.get('side')=='LONG' else '🔴 SHORT')}\n"
                         "🔚 پوزیشن بسته شد."
                     )
-                    send_message(chat_id, msg)
 
-            previous_positions[(chat_id, wallet)] = current_positions
+            # به‌روزرسانی وضعیت قبلی
+            with state_lock:
+                previous_positions[(chat_id, wallet)] = current_positions
 
 def periodic_report():
-    for chat_id, wallets in user_wallets.items():
+    with state_lock:
+        snapshot = [(cid, list(wallets)) for cid, wallets in user_wallets.items()]
+
+    for chat_id, wallets in snapshot:
         for wallet in wallets:
             current_positions = get_positions(wallet)
-
             header = f"🕒 *Periodic Report (1 min)*\n💼 (`{wallet}`)\n━━━━━━━━━━"
             if current_positions:
                 body = "\n\n".join([format_position_line(p) for p in current_positions])
@@ -183,17 +186,21 @@ def periodic_report():
 @bot.message_handler(commands=['start'])
 def start(message):
     chat_id = message.chat.id
-    user_wallets.setdefault(chat_id, [])
+    with state_lock:
+        user_wallets.setdefault(chat_id, [])
     send_message(chat_id, "سلام 👋\nآدرس ولت‌هات رو یکی یکی بفرست تا برات مانیتور کنم.")
 
 @bot.message_handler(commands=['stop'])
 def stop(message):
     chat_id = message.chat.id
-    if chat_id in user_wallets:
+    with state_lock:
+        existed = chat_id in user_wallets
         user_wallets.pop(chat_id, None)
+        # پاک‌کردن previous_positions مربوط به این کاربر
         keys_to_remove = [k for k in previous_positions if k[0] == chat_id]
         for k in keys_to_remove:
             previous_positions.pop(k, None)
+    if existed:
         send_message(chat_id, "🛑 مانیتورینگ برای شما متوقف شد.\nبرای شروع دوباره، فقط آدرس ولت جدیدت رو بفرست.")
     else:
         send_message(chat_id, "⚠️ هیچ مانیتورینگی برای شما فعال نبود.")
@@ -204,12 +211,21 @@ def add_wallet(message):
     wallet = message.text.strip()
     if not wallet:
         return
-    user_wallets.setdefault(chat_id, [])
-    if wallet in user_wallets[chat_id]:
+    with state_lock:
+        user_wallets.setdefault(chat_id, [])
+        if wallet in user_wallets[chat_id]:
+            already = True
+        else:
+            already = False
+            user_wallets[chat_id].append(wallet)
+    if already:
         send_message(chat_id, f"⚠️ ولت `{wallet}` از قبل اضافه شده.")
         return
-    user_wallets[chat_id].append(wallet)
-    previous_positions[(chat_id, wallet)] = get_positions(wallet)
+
+    # گرفتن وضعیت اولیه بیرون از لاک (کند است)
+    positions = get_positions(wallet)
+    with state_lock:
+        previous_positions[(chat_id, wallet)] = positions
     send_message(chat_id, f"✅ ولت `{wallet}` اضافه شد و از همین الان مانیتور میشه.")
 
 # ================== اجرا ==================
@@ -217,9 +233,13 @@ schedule.every(1).minutes.do(periodic_report)
 
 def run_scheduler():
     while True:
-        check_positions()
-        schedule.run_pending()
+        try:
+            check_positions()
+            schedule.run_pending()
+        except Exception as e:
+            # تا ترد نمیرود
+            print("Scheduler error:", e)
         time.sleep(2)
 
 threading.Thread(target=run_scheduler, daemon=True).start()
-bot.polling()
+bot.polling(skip_pending=True)
