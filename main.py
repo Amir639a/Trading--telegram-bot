@@ -80,7 +80,7 @@ for wallet in wallets:
 
         previous_positions[wallet] = current_positions
 
-    return changes_detected
+        return changes_detected
 
 def periodic_report():
     changes = check_positions()
