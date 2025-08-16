@@ -121,7 +121,9 @@ def get_positions(wallet):
         return []
 
 def send_message(chat_id, text):
-    bot.send_message(chat_id, text, parse_mode="Markdown")def format_position_line(p):
+    bot.send_message(chat_id, text, parse_mode="Markdown")
+
+def format_position_line(p):
     lines = [
         f"🪙 *{p.get('pair','?')}* | {('🟢 LONG' if p.get('side')=='LONG' else '🔴 SHORT')}",
         f"🔢 Size: {p.get('size','?')}",
@@ -146,7 +148,7 @@ def check_positions():
                 if uid not in prev_map:
                     msg = (
                         "🚀 *Position Opened*\n"
-                        f"💼 ({wallet})\n"
+                        f"💼 (`{wallet}`)\n"
                         "━━━━━━━━━━\n"
                         f"{format_position_line(pos)}"
                     )
@@ -156,7 +158,7 @@ def check_positions():
                 if uid not in current_map:
                     msg = (
                         "✅ *Position Closed*\n"
-                        f"💼 ({wallet})\n"
+                        f"💼 (`{wallet}`)\n"
                         "━━━━━━━━━━\n"
                         f"🪙 *{pos.get('pair','?')}* | {('🟢 LONG' if pos.get('side')=='LONG' else '🔴 SHORT')}\n"
                         "🔚 پوزیشن بسته شد."
@@ -170,7 +172,7 @@ def periodic_report():
         for wallet in wallets:
             current_positions = get_positions(wallet)
 
-            header = f"🕒 *Periodic Report (1 min)*\n💼 ({wallet})\n━━━━━━━━━━"
+            header = f"🕒 *Periodic Report (1 min)*\n💼 (`{wallet}`)\n━━━━━━━━━━"
             if current_positions:
                 body = "\n\n".join([format_position_line(p) for p in current_positions])
                 send_message(chat_id, f"{header}\n{body}")
@@ -204,11 +206,11 @@ def add_wallet(message):
         return
     user_wallets.setdefault(chat_id, [])
     if wallet in user_wallets[chat_id]:
-        send_message(chat_id, f"⚠️ ولت {wallet} از قبل اضافه شده.")
+        send_message(chat_id, f"⚠️ ولت `{wallet}` از قبل اضافه شده.")
         return
     user_wallets[chat_id].append(wallet)
     previous_positions[(chat_id, wallet)] = get_positions(wallet)
-    send_message(chat_id, f"✅ ولت {wallet} اضافه شد و از همین الان مانیتور میشه.")
+    send_message(chat_id, f"✅ ولت `{wallet}` اضافه شد و از همین الان مانیتور میشه.")
 
 # ================== اجرا ==================
 schedule.every(1).minutes.do(periodic_report)
