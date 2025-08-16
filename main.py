@@ -8,131 +8,133 @@ import requests
 API_TOKEN = "8331622449:AAFoLzxC9lyGJDchsQpKpYxgIduUbsUuOys"
 bot = telebot.TeleBot(API_TOKEN)
 
-# ذخیره ولت‌ها برای هر کاربر
+# ذخیره ولت‌ها و پوزیشن‌های قبلی برای هر کاربر
 user_wallets = {}
 previous_positions = {}
 
 # ================== توابع ==================
 def get_positions(wallet):
-    """گرفتن پوزیشن‌های باز از API هایپرلیکوئید"""
-    url = "https://api.hyperliquid.xyz/info"
-    payload = {"type": "clearinghouseState", "user": wallet}
+    """
+    گرفتن پوزیشن‌ها از هایپردش
+    """
     try:
-        resp = requests.post(url, json=payload, timeout=10)
-        data = resp.json()
-        result = []
-        for p in data.get("assetPositions", []):
-            pos = p.get("position", {})
-            size = float(pos.get("szi", 0))
-            if size == 0:
-                continue
-            result.append({
-                "symbol": pos.get("coin", "-"),
-                "size": size,
-                "entry": float(pos.get("entryPx", 0)),
-                "pnl": float(pos.get("unrealizedPnl", 0))
-            })
-        return result
+        url = f"https://hyperdash.info/api/v1/trader/{wallet}/positions"
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            return response.json().get("positions", [])
+        else:
+            return []
     except Exception as e:
-        print(f"Error fetching positions for {wallet}: {e}")
+        print(f"خطا در گرفتن پوزیشن برای {wallet}: {e}")
         return []
 
+def format_pnl(pnl):
+    """نمایش سود/ضرر با اعشار و رنگ سبز/قرمز"""
+    try:
+        pnl = float(pnl)
+    except:
+        return "N/A"
+
+    if pnl >= 0:
+        return f"✅ PNL: +{pnl:.2f}"
+    else:
+        return f"🔴 PNL: {pnl:.2f}"
+
+def format_position(wallet, pos, status="Opened"):
+    """فرمت‌بندی پوزیشن برای ارسال به تلگرام"""
+    return (
+        f"{'📈' if status=='Opened' else '📉'} Position {status}\n"
+        f"Wallet: `{wallet}`\n"
+        f"Pair: {pos.get('pair')}\n"
+        f"Side: {pos.get('side')}\n"
+        f"Size: {pos.get('size')}\n"
+        f"Entry: {pos.get('entryPrice')}\n"
+        f"Mark: {pos.get('markPrice')}\n"
+        f"{format_pnl(pos.get('unrealizedPnl'))}"
+    )
+
 def send_message(chat_id, text):
-    """ارسال پیام تلگرام"""
+    """ارسال پیام به تلگرام"""
     bot.send_message(chat_id, text, parse_mode="Markdown")
 
-def format_pnl(pnl):
-    """فرمت کردن سود/ضرر با رنگ"""
-    if pnl > 0:
-        return f"<b><u><span style='color:green'>+{pnl:.2f}</span></u></b>"
-    elif pnl < 0:
-        return f"<b><u><span style='color:red'>{pnl:.2f}</span></u></b>"
-    else:
-        return f"{pnl:.2f}"
-
 def check_positions():
-    """چک تغییرات پوزیشن‌ها (لحظه‌ای)"""
+    """چک کردن تغییرات پوزیشن‌ها برای همه کاربرا (لحظه‌ای)"""
     for chat_id, wallets in user_wallets.items():
         for wallet in wallets:
             current_positions = get_positions(wallet)
             prev_positions = previous_positions.get((chat_id, wallet), [])
 
-            # تبدیل برای مقایسه ساده
-            prev_set = {(p["symbol"], p["size"]) for p in prev_positions}
-            curr_set = {(p["symbol"], p["size"]) for p in current_positions}
+            # تبدیل به دیکشنری برای مقایسه راحت‌تر
+            current_ids = {p["id"]: p for p in current_positions}
+            prev_ids = {p["id"]: p for p in prev_positions}
 
-            opened = curr_set - prev_set
-            closed = prev_set - curr_set
+            # باز شده‌ها
+            for pid, pos in current_ids.items():
+                if pid not in prev_ids:
+                    send_message(chat_id, format_position(wallet, pos, "Opened"))
 
-            # پوزیشن باز شده
-            for sym, size in opened:
-                pos = next(p for p in current_positions if p["symbol"] == sym and p["size"] == size)
-                msg = (
-                    f"📈 *Position Opened*\n"
-                    f"Wallet: `{wallet}`\n"
-                    f"Symbol: *{pos['symbol']}*\n"
-                    f"Size: `{pos['size']}`\n"
-                    f"Entry: `${pos['entry']:.2f}`"
-                )
-                send_message(chat_id, msg)
+            # بسته شده‌ها
+            for pid, pos in prev_ids.items():
+                if pid not in current_ids:
+                    send_message(chat_id, format_position(wallet, pos, "Closed"))
 
-            # پوزیشن بسته شده
-            for sym, size in closed:
-                msg = (
-                    f"📉 *Position Closed*\n"
-                    f"Wallet: `{wallet}`\n"
-                    f"Symbol: *{sym}*\n"
-                    f"Size: `{size}`"
-                )
-                send_message(chat_id, msg)
-
-            # ذخیره وضعیت جدید
+            # ذخیره وضعیت
             previous_positions[(chat_id, wallet)] = current_positions
 
 def periodic_report():
-    """گزارش دوره‌ای هر ۱ دقیقه"""
+    """گزارش دوره‌ای هر ۱ دقیقه برای همه کاربرا"""
     for chat_id, wallets in user_wallets.items():
+        report_texts = []
         for wallet in wallets:
-            positions = get_positions(wallet)
-            if positions:
-                report = f"📊 *Wallet `{wallet}` report:*\n\n"
-                for p in positions:
-                    pnl = p["pnl"]
-                    emoji = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪️"
-                    report += (
-                        f"{emoji} *{p['symbol']}*\n"
-                        f"   Size: `{p['size']}`\n"
-                        f"   Entry: `${p['entry']:.2f}`\n"
-                        f"   PnL: `{pnl:.2f}`\n\n"
-                    )
-            else:
-                report = f"ℹ️ Wallet `{wallet}` has no open positions."
-            send_message(chat_id, report)
+            current_positions = get_positions(wallet)
+
+            if not current_positions:
+                continue
+
+            for pos in current_positions:
+                report_texts.append(
+                    f"Wallet: `{wallet}`\n"
+                    f"Pair: {pos.get('pair')}\n"
+                    f"Side: {pos.get('side')}\n"
+                    f"Size: {pos.get('size')}\n"
+                    f"Entry: {pos.get('entryPrice')}\n"
+                    f"Mark: {pos.get('markPrice')}\n"
+                    f"{format_pnl(pos.get('unrealizedPnl'))}\n"
+                )
+
+        if report_texts:
+            msg = "📊 *Periodic Report*\n\n" + "\n".join(report_texts)
+            send_message(chat_id, msg)
+        else:
+            send_message(chat_id, "ℹ️ در حال حاضر هیچ پوزیشنی باز نیست.")
 
 # ================== دستورات ربات ==================
 @bot.message_handler(commands=['start'])
 def start(message):
     chat_id = message.chat.id
-    user_wallets[chat_id] = []
-    send_message(chat_id, "سلام 👋 ولت‌هات رو بفرست تا مانیتور کنم.\nهر ولت رو جدا بفرست.")
+    user_wallets[chat_id] = []   # وقتی کاربر تازه استارت میکنه، لیست ولتش خالیه
+    send_message(chat_id, "سلام 👋 ولت‌هات رو بفرست تا مانیتور کنم.\nهر ولت رو جداگانه بفرست.")
 
 @bot.message_handler(func=lambda message: True)
 def add_wallet(message):
     chat_id = message.chat.id
     wallet = message.text.strip()
+
     if chat_id not in user_wallets:
         user_wallets[chat_id] = []
+
     user_wallets[chat_id].append(wallet)
-    send_message(chat_id, f"✅ ولت `{wallet}` اضافه شد.\nاز الان مانیتورش شروع شد.")
+    send_message(chat_id, f"✅ ولت `{wallet}` اضافه شد.\nحالا مانیتورش شروع میشه.")
 
 # ================== اجرا ==================
 schedule.every(1).minutes.do(periodic_report)
 
 def run_scheduler():
     while True:
-        schedule.run_pending()
         check_positions()  # لحظه‌ای
+        schedule.run_pending()  # دوره‌ای
         time.sleep(10)
 
 threading.Thread(target=run_scheduler, daemon=True).start()
+
 bot.polling()
