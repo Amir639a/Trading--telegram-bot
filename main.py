@@ -3,7 +3,7 @@ import schedule
 import telebot
 
 # ================== تنظیمات ==================
-API_TOKEN = "توکن_بات_خودت"
+API_TOKEN = "8331622449:AAFoLzxC9lyGJDchsQpKpYxgIduUbsUuOys"
 bot = telebot.TeleBot(API_TOKEN)
 
 # برای هر کاربر یک لیست ولت ذخیره می‌کنیم
